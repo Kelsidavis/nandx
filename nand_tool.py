@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Apple Silicon MacBook NAND Blank Image Tool
+NandX — Apple Silicon NAND Image Tool
 
 Analyzes, adapts, and generates blank NAND programmer dumps for MacBook repair.
 These dumps are used with NAND programmers to initialize replacement NAND chips
@@ -765,7 +765,7 @@ def compare_dumps(dump1: NANDDump, dump2: NANDDump):
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 USAGE = """
-Apple Silicon NAND Blank Image Tool
+NandX — Apple Silicon NAND Image Tool
 ====================================
 
 Usage:

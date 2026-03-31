@@ -1,14 +1,17 @@
-# Apple Silicon NAND Tool
+# NandX
 
-Tools for analyzing, adapting, and preparing blank NAND images for Apple Silicon MacBook SSD repair.
+Apple Silicon NAND image toolkit for MacBook SSD repair.
 
-When a MacBook's NAND chip fails or needs replacement, you can't just solder on a new blank chip — the SoC expects to find specific initialization data. These tools work with NAND programmer dump files to prepare chips that the SoC will accept, allowing DFU restore to complete.
+When a MacBook's NAND chip fails or needs replacement, you can't just solder on a new blank chip — the SoC expects to find specific initialization data. NandX works with NAND programmer dump files to prepare chips that the SoC will accept, allowing DFU restore to complete.
 
 ## Quick start
 
 ```bash
 # Analyze a dump file
 python3 nand_tool.py info dump.bin
+
+# Scan a wiped/unknown chip
+python3 nand_tool.py scan mystery_chip.bin
 
 # List known chip types
 python3 nand_tool.py list-chips

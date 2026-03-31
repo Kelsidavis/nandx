@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Apple Silicon NAND Programmer GUI
+NandX — Apple Silicon NAND Programmer
 
 Visual tool for preparing blank NAND images for MacBook repair.
 Lets you pick the target device, assign chip positions, choose donor
@@ -177,7 +177,7 @@ DEVICES = {
 class NANDToolGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Apple Silicon NAND Programmer")
+        self.root.title("NandX — Apple Silicon NAND Programmer")
         self.root.geometry("1050x750")
         self.root.minsize(900, 600)
 
@@ -195,7 +195,7 @@ class NANDToolGUI:
         top = ttk.Frame(self.root, padding=8)
         top.pack(fill='x')
 
-        ttk.Label(top, text="Apple Silicon NAND Programmer",
+        ttk.Label(top, text="NandX",
                   font=('Helvetica', 16, 'bold')).pack(side='left')
 
         # Main paned
