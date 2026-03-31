@@ -16,7 +16,7 @@ from pathlib import Path
 # Import the core engine
 from nand_tool import (
     NANDDump, KNOWN_CHIPS, CHIP_GENERATIONS, ERASED_PATTERN,
-    FILE_HEADER, SCRAMBLE_KEY, get_chip_generation,
+    FILE_HEADER, SCRAMBLE_KEY, get_chip_generation, scan_dump,
     adapt_dump, scramble, descramble, build_header_slot,
 )
 
@@ -272,6 +272,8 @@ class NANDToolGUI:
                    command=self._auto_detect).pack(side='left', padx=4)
         ttk.Button(btn_frame, text="Analyze All",
                    command=self._analyze_all).pack(side='left', padx=4)
+        ttk.Button(btn_frame, text="Scan File",
+                   command=self._scan_file).pack(side='left', padx=4)
 
         ttk.Separator(btn_frame, orient='vertical').pack(side='left', fill='y', padx=8)
 
@@ -574,6 +576,22 @@ class NANDToolGUI:
             except Exception as e:
                 self._log(f"  ERROR: {e}")
 
+    def _scan_file(self):
+        """Scan a potentially wiped/corrupted dump file to identify chip type."""
+        path = filedialog.askopenfilename(
+            title="Select dump file to scan (can be wiped/corrupted)",
+            initialdir=self.base_dir,
+            filetypes=[("NAND dumps", "*.bin"), ("All files", "*.*")])
+        if not path:
+            return
+        self._log(f"\n=== SCANNING {os.path.basename(path)} ===")
+        # Capture scan_dump output
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            scan_dump(path)
+        self._log(buf.getvalue())
+
     def _export(self):
         """Export adapted images for all positions."""
         output_dir = self.export_dir_var.get()
@@ -581,14 +599,25 @@ class NANDToolGUI:
             messagebox.showerror("Error", "Select an output directory first.")
             return
 
-        # Check all positions have donors
+        # Check all positions have donors and valid F2 values
         missing = []
+        unknown_f2 = []
         for widget in self.position_widgets:
             if not widget['donor_var'].get():
                 missing.append(widget['pos']['label'])
+            f2 = widget['pos'].get('f2', '?')
+            if f2 == '?':
+                unknown_f2.append(widget['pos']['label'])
         if missing:
             messagebox.showerror("Missing donors",
                                  f"No donor assigned for: {', '.join(missing)}")
+            return
+        if unknown_f2:
+            messagebox.showerror("Unknown chip type",
+                                 f"F2 identifier unknown for: {', '.join(unknown_f2)}\n\n"
+                                 f"You need a dump from this chip type first.\n"
+                                 f"Use 'Scan' to read your chips, or try using the\n"
+                                 f"donor's F2 directly (the donor dump will be copied as-is).")
             return
 
         model = self.device_var.get()

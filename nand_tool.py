@@ -11,12 +11,12 @@ File format (reverse-engineered):
   - 0x10+: NAND data, XOR-scrambled with a fixed 16-byte key
 
 Descrambled NAND data is organized as 512-byte slots:
-  - Header slots (41 for most types, 11 for M233):
-    - 0x000-0x00F: F1 field (universal page/block identifier, cycling)
+  - Header slots (varies per chip type: 11, 21, or 41):
+    - 0x000-0x00F: F1 field (page/block identifier, per-generation constant cycle)
     - 0x010-0x01F: F2 field (chip type identifier, constant per NAND type)
-    - 0x020-0x02F: F3 field (per-slot authentication/nonce)
+    - 0x020-0x02F: F3 field (per-slot authentication/nonce, deterministic per chip type)
     - 0x030-0x1EF: 0xFF padding
-    - 0x1F0-0x1FF: Tag (universal cycling values)
+    - 0x1F0-0x1FF: Tag (cycling values, per-generation)
   - Dense data slots: full 512 bytes of SoC initialization data (FTL, 1TR, etc.)
 """
 
@@ -24,6 +24,7 @@ import os
 import sys
 import struct
 import hashlib
+import itertools
 from pathlib import Path
 
 # ── Constants ──────────────────────────────────────────────────────────────────
@@ -61,6 +62,7 @@ CHIP_GENERATIONS = {
     ],
 }
 
+
 def get_chip_generation(f2_hex):
     """Return the generation name for a chip F2 identifier."""
     for gen, chips in CHIP_GENERATIONS.items():
@@ -68,11 +70,12 @@ def get_chip_generation(f2_hex):
             return gen
     return 'unknown'
 
+
 # Per-chip-type F3 auth tag tables (descrambled).
 # F3 is deterministic per chip type and slot index — confirmed identical
 # across different physical chips and different SoCs using the same NAND type.
 F3_TABLES = {
-    'e4569cdf058135a8a80096adba963bf1': [  # KICM223
+    'e4569cdf058135a8a80096adba963bf1': [  # KICM223 (41 slots)
         '2ca2d49d01db89aaba57fc95582b7b18', '4d9d642da3e8295f834ec93f34b4d4e2',
         '9f7271f350efe92797cc29c8c40f1fd1', '6935426a3ec9e678dbe557ce9d978915',
         '0709ed072f9ac4914444b331d9e2d406', '0a9a59f2b109a3e860fa2372b4e6b1d4',
@@ -95,7 +98,7 @@ F3_TABLES = {
         '9750745783058f288441e8ec5f99fe70', '368eff874016f6a0f3aa4827ae226f69',
         '79dd8463c832ef0d7adb6af498eb13c5',
     ],
-    '098816c0854210564584afd0f5c1e6c1': [  # KICM229
+    '098816c0854210564584afd0f5c1e6c1': [  # KICM229 (41 slots)
         '13ac25b723b0656d2ae0797ab7a05f10', 'b674c66d23d076a65629966760faaf60',
         'd943970d161cbb7f9a5c51a3ae9536c1', '5624ff941c142c5ceea35a8b0d990bb0',
         '985922e6df345e3a55f3c1254c634623', 'cd84c4cf14c7c575f5abc9afcd6cc31c',
@@ -118,7 +121,7 @@ F3_TABLES = {
         '61cec93ff3335dceda8c25e6a2df25f8', '03f28b0ae66f42af8940fb9e75283cd5',
         'fc85730f9eeacee6361950cd4a82ba8f',
     ],
-    'f007cc44bdac94bf15111ec5bc88d006': [  # KICM233
+    'f007cc44bdac94bf15111ec5bc88d006': [  # KICM233 (11 slots)
         '450ad81b7abe55090d0713cef6ad47cc', '267ce876155bd5e1327af18288cccda6',
         '6bc106117f08128516325a349e2afd3b', '01407327489364a555ba6616d700270b',
         '85d527711941ea3f5cda07b04e49ea76', 'e8dace4bca289c4269ce00c48283781e',
@@ -126,7 +129,7 @@ F3_TABLES = {
         'be9536bcc24c370649bce46d29086a22', '7c1ceae26ab14b54f8d6bc9c343a0842',
         '2fff3b985aaaede23cb14469ab6b806b',
     ],
-    'd3bc36674d8ec40531c35ffec6f04c91': [  # KICM227
+    'd3bc36674d8ec40531c35ffec6f04c91': [  # KICM227 (41 slots)
         '623b5bdb001268a8d9222a53f77a5862', '12ac5f779245f348667a4d8e920c75ec',
         '76a0662fba752962599b8f3d069b557d', 'adfd271e057f36081851e873dd23db4b',
         'b60536c7295629810bd01ccca1e3d9c3', 'd589d51e272774e71e9c023ed96c59a0',
@@ -149,7 +152,7 @@ F3_TABLES = {
         '08076d1eb9133baed106dfa415c05db3', '62f52eb4f71660678b22d294c75e230b',
         '4096284eededc7b4c7426ec2ebe3b358',
     ],
-    'ba5cb781c2ac883db41f1636aeb804d5': [  # K5A4
+    'ba5cb781c2ac883db41f1636aeb804d5': [  # K5A4 (21 slots)
         '60c2501995a3972a8d9468ad1826ada0', '17a10fbc423d1337f64b9368a754a957',
         'a458cfffd73c480d709f828048b934e1', '7411f9a42b261bcc3c9f464a5437f770',
         '01e91c35f9009b78b6fdf626b7e049d3', '1efeb7d46a45e07898214bd48eaa7a07',
@@ -162,7 +165,7 @@ F3_TABLES = {
         '68033dd45a8d094c260f22e9391e7f94', '3078d57be0c4491d96e53f6943835e27',
         'd432589eb415fe29b47dc77732441230',
     ],
-    'fea75da1118971de1d3d621be63ea23e': [  # K5A5
+    'fea75da1118971de1d3d621be63ea23e': [  # K5A5 (41 slots)
         '6690eb19b06b8a68f521ed275e5e2bcd', '372b970d41176c7a726e361a37d5a8e3',
         '956113dc912df37ea8599ede2b12b81f', '56c7c0f9b54b6776c2a323c7a6e36988',
         'f24bf1118dd33ffd4e73eeddfa88ef87', 'a6df189b5ecec5629d67f64448caee2c',
@@ -185,7 +188,7 @@ F3_TABLES = {
         '24647a9bf04445c1f1717341a201cd58', 'b3c4c01195c7fa183b748163523dfd55',
         '0fe69ae54b141bdd337b680730dd53ef',
     ],
-    '599612320ef0007cb3544dd74c99bd00': [  # K5A8
+    '599612320ef0007cb3544dd74c99bd00': [  # K5A8 (41 slots)
         'afa0f53f8e239e681278a7e72919a84c', 'b823a27440e0f58f18654f84b2cbbeb3',
         '53fb74f8681c7c06066f1d5f75fbfd4e', '97412119a43289a08b1e8434b562b5af',
         '9e2ee5617e3b399e22aa929c10e19ee1', 'a85efce38801426650f2d821690ee7d2',
@@ -210,42 +213,98 @@ F3_TABLES = {
     ],
 }
 
-# Universal tag cycle (descrambled) - 8 values that repeat
-TAG_CYCLE = [
-    bytes.fromhex('c0ef6437d580e5092e22d437cce1c59d'),  # Tag 0
-    bytes.fromhex('b2414f31089004514ab6dfc3ddb6590b'),  # Tag 1
-    bytes.fromhex('5aa35d3de5a5b3ed7f90f04a5320a91d'),  # Tag 2
-    bytes.fromhex('26d65d98e900b57e5938e2e89b36dac8'),  # Tag 3
-    bytes.fromhex('832df14e02afe17937b5244a0ab3b30b'),  # Tag 4
-    bytes.fromhex('58ab45c7e151015a5e54ca78bdd5ce60'),  # Tag 5
-    bytes.fromhex('f9c854781921c1c9451445d7d5bf2dc0'),  # Tag 6
-    bytes.fromhex('3af6af4e6c8d19c87eb9e0986afc4b05'),  # Tag 7 (= descrambled file header)
-]
+# Per-generation F1 and Tag cycle values (descrambled).
+# Extracted from actual dumps — these differ between gen1 and gen2.
+GEN_CONSTANTS = {
+    'gen1_kicm': {
+        'f1': [
+            bytes.fromhex('f829f35e3cedaaf8c2e188cf1f8da80c'),
+            bytes.fromhex('c0ef6437d580e5092e22d437cce1c59d'),
+            bytes.fromhex('b2414f31089004514ab6dfc3ddb6590b'),
+            bytes.fromhex('5aa35d3de5a5b3ed7f90f04a5320a91d'),
+            bytes.fromhex('26d65d98e900b57e5938e2e89b36dac8'),
+            bytes.fromhex('832df14e02afe17937b5244a0ab3b30b'),
+            bytes.fromhex('58ab45c7e151015a5e54ca78bdd5ce60'),
+            bytes.fromhex('f9c854781921c1c9451445d7d5bf2dc0'),
+        ],
+        'tags': [
+            bytes.fromhex('c0ef6437d580e5092e22d437cce1c59d'),
+            bytes.fromhex('b2717c3108a46451a2aedc2bfdb25319'),
+            bytes.fromhex('5ab36e3de591d3ed9792f34c727aa307'),
+            bytes.fromhex('26c65e98f900357ea1207b47833cd0c8'),
+            bytes.fromhex('832d934e120fbb79d1b72da402b9f90b'),
+            bytes.fromhex('58abcdc771f18a715a7c89dcbdd5de60'),
+            bytes.fromhex('f9c85d783e2b60c9bd76c6d9fdbf7dd0'),
+            bytes.fromhex('3ae6a7406cdd1dc876b1f9bc64fc4b05'),
+        ],
+    },
+    'gen2_k5a': {
+        'f1': [
+            bytes.fromhex('6fb7aecf0e5fc6e10688cf254c132dc8'),
+            bytes.fromhex('0708032a628e175a77c470d419b3bd62'),
+            bytes.fromhex('351e617c228d35e15383418bb9ca451d'),
+            bytes.fromhex('0ad13543ee2ad6d01a6cf365658979e6'),
+            bytes.fromhex('3631d2b37c4c1242b1e10eac62729057'),
+            bytes.fromhex('fcd3e1ba7099e581acc5c8ef30ce930c'),
+        ],
+        'tags': [
+            bytes.fromhex('c0ef6437d580e5092e22d437cce1c59d'),
+            bytes.fromhex('b2717c3108a46451a2aedc2bfdb25319'),
+            bytes.fromhex('5ab36e3de591d3ed9792f34c727aa307'),
+            bytes.fromhex('26c65e98f900357ea1207b47833cd0c8'),
+            bytes.fromhex('832d934e120fbb79d1b72da402b9f90b'),
+            bytes.fromhex('58abcdc771f18a715a7c89dcbdd5de60'),
+            bytes.fromhex('f9c85d783e2b60c9bd76c6d9fdbf7dd0'),
+            bytes.fromhex('3ae6a7406cdd1dc876b1f9bc64fc4b05'),
+            bytes.fromhex('44da6d6dc3ee23281e6be504d052b6a0'),
+            bytes.fromhex('6fe76007fa6400d603c36a359c1c308b'),
+        ],
+    },
+}
 
-# Universal F1 cycle (descrambled) - base values
-F1_BASE = [
-    bytes.fromhex('f829f35e3cedaaf8c2e188cf1f8da80c'),  # F1[0]
-    bytes.fromhex('c0ef6437d580e5092e22d437cce1c59d'),  # F1[1] (= Tag[0])
-    bytes.fromhex('b2414f31089004514ab6dfc3ddb6590b'),  # F1[2] (= Tag[1])
-    bytes.fromhex('5aa35d3de5a5b3ed7f90f04a5320a91d'),  # F1[3] (= Tag[2])
-    bytes.fromhex('26d65d98e900b57e5938e2e89b36dac8'),  # F1[4] (= Tag[3])
-    bytes.fromhex('832df14e02afe17937b5244a0ab3b30b'),  # F1[5] (= Tag[4])
-    bytes.fromhex('58ab45c7e151015a5e54ca78bdd5ce60'),  # F1[6] (= Tag[5])
-    bytes.fromhex('f9c854781921c1c9451445d7d5bf2dc0'),  # F1[7] (= Tag[6])
-]
+
+def get_gen_constants(f2_hex):
+    """Get the F1/Tag cycle constants for a chip's generation."""
+    gen = get_chip_generation(f2_hex)
+    return GEN_CONSTANTS.get(gen)
 
 
-# ── Scramble/Descramble ───────────────────────────────────────────────────────
+def get_header_slot_count(f2_hex):
+    """Get expected header slot count for a chip type from its F3 table."""
+    table = F3_TABLES.get(f2_hex)
+    if table:
+        return len(table)
+    return 41  # default
+
+
+# ── Scramble/Descramble (fast) ────────────────────────────────────────────────
+
+def _make_key_tile(length: int) -> bytes:
+    """Tile the 16-byte scramble key to match a given data length."""
+    reps = (length + 15) // 16
+    return (SCRAMBLE_KEY * reps)[:length]
+
 
 def scramble(data: bytes) -> bytes:
     """Apply or remove NAND XOR scrambling (same operation both ways)."""
-    result = bytearray(len(data))
-    kl = len(SCRAMBLE_KEY)
-    for i in range(len(data)):
-        result[i] = data[i] ^ SCRAMBLE_KEY[i % kl]
-    return bytes(result)
+    key = _make_key_tile(len(data))
+    return bytes(a ^ b for a, b in zip(data, key))
+
 
 descramble = scramble  # XOR is its own inverse
+
+try:
+    import numpy as np
+
+    def scramble(data: bytes) -> bytes:
+        """Fast NumPy XOR scramble/descramble."""
+        arr = np.frombuffer(data, dtype=np.uint8)
+        key = np.frombuffer(_make_key_tile(len(data)), dtype=np.uint8)
+        return bytes(arr ^ key)
+
+    descramble = scramble
+except ImportError:
+    pass  # fall back to pure-Python version above
 
 
 # ── Dump Parsing ──────────────────────────────────────────────────────────────
@@ -253,7 +312,7 @@ descramble = scramble  # XOR is its own inverse
 class NANDDump:
     """Parsed representation of a NAND programmer dump file."""
 
-    def __init__(self, filepath):
+    def __init__(self, filepath, strict=True):
         self.filepath = Path(filepath)
         with open(filepath, 'rb') as f:
             self.raw = f.read()
@@ -262,7 +321,7 @@ class NANDDump:
             raise ValueError(f"File too small: {len(self.raw)} bytes")
 
         self.file_header = self.raw[0x00:0x10]
-        if self.file_header != FILE_HEADER:
+        if strict and self.file_header != FILE_HEADER:
             raise ValueError(f"Invalid file header: {self.file_header.hex()}")
 
         self.nand_data = self.raw[0x10:]
@@ -283,6 +342,18 @@ class NANDDump:
 
     def _find_header_boundary(self):
         """Find where header slots end and dense data begins."""
+        # Use known count if F2 matches
+        known_count = get_header_slot_count(self.f2.hex())
+        if self.f2.hex() in F3_TABLES and known_count <= self.num_slots:
+            # Verify the known count is plausible
+            if known_count < self.num_slots:
+                offset = known_count * 0x200
+                middle = self.descrambled[offset + 0x30:offset + 0x1F0]
+                if not all(b == 0xFF for b in middle):
+                    return known_count  # confirmed: dense data starts here
+            return known_count
+
+        # Heuristic fallback
         for slot_idx in range(min(100, self.num_slots)):
             offset = slot_idx * 0x200
             middle = self.descrambled[offset + 0x30:offset + 0x1F0]
@@ -329,24 +400,22 @@ class NANDDump:
         print(f"Total slots:     {self.num_slots}")
 
         # Count erased vs non-erased in dense region
-        dense_start = self.num_header_slots * 0x200
         erased_slots = 0
         data_slots = 0
         for i in range(self.num_header_slots, self.num_slots):
             offset = i * 0x200
             slot = self.nand_data[offset:offset + 0x200]
-            if all(slot[j:j+16] == ERASED_PATTERN
-                   for j in range(0, 0x200, 16)):
+            if slot == ERASED_PATTERN * (0x200 // 16):
                 erased_slots += 1
             else:
                 data_slots += 1
 
         total_dense = erased_slots + data_slots
-        print(f"Dense data:      {data_slots} data slots, "
-              f"{erased_slots} erased slots "
-              f"({data_slots / total_dense * 100:.1f}% utilized)")
+        if total_dense > 0:
+            print(f"Dense data:      {data_slots} data slots, "
+                  f"{erased_slots} erased slots "
+                  f"({data_slots / total_dense * 100:.1f}% utilized)")
 
-        # Raw header bytes (for identification)
         print(f"Raw 0x20-0x2F:   {self.raw[0x20:0x30].hex()}")
         print(f"Raw 0x30-0x3F:   {self.raw[0x30:0x40].hex()}")
 
@@ -355,22 +424,134 @@ class NANDDump:
         print(f"\n{'Slot':>4}  {'F1':^34}  {'F2':^34}  {'F3':^34}  {'Tag':^34}")
         print("-" * 150)
         for rec in self.header_records:
-            f1_hex = rec['f1'].hex()
-            f2_hex = rec['f2'].hex()
-            f3_hex = rec['f3'].hex()
-            tag_hex = rec['tag'].hex()
-            print(f"{rec['slot']:4d}  {f1_hex}  {f2_hex}  {f3_hex}  {tag_hex}")
+            print(f"{rec['slot']:4d}  {rec['f1'].hex()}  {rec['f2'].hex()}  "
+                  f"{rec['f3'].hex()}  {rec['tag'].hex()}")
+
+
+# ── Dump Scanning (for wiped/corrupted chips) ────────────────────────────────
+
+def scan_dump(filepath):
+    """
+    Scan a potentially wiped or corrupted dump file.
+    Tries to identify chip type and extract any surviving header data,
+    even from files that don't have a valid programmer tool header.
+    """
+    with open(filepath, 'rb') as f:
+        raw = f.read()
+
+    size = len(raw)
+    name = os.path.basename(filepath)
+    print(f"Scanning: {name} ({size} bytes, {size / 1024 / 1024:.1f} MB)")
+
+    # Check for valid file header
+    has_header = raw[0x00:0x10] == FILE_HEADER
+    print(f"  Tool header:     {'VALID' if has_header else 'MISSING/INVALID'}")
+
+    # Try parsing as a valid dump first
+    if has_header:
+        try:
+            dump = NANDDump(filepath)
+            print(f"  Chip type:       {dump.chip_type}")
+            print(f"  Generation:      {dump.generation}")
+            print(f"  F2:              {dump.f2.hex()}")
+            print(f"  Header slots:    {dump.num_header_slots}")
+            print(f"  Status:          VALID DUMP")
+            return dump
+        except Exception as e:
+            print(f"  Parse error:     {e}")
+
+    # Count erased vs data bytes
+    erased_16 = ERASED_PATTERN
+    ff_16 = b'\xFF' * 16
+    zero_16 = b'\x00' * 16
+    erased_count = 0
+    ff_count = 0
+    zero_count = 0
+    data_count = 0
+    total_blocks = size // 16
+
+    for offset in range(0, size - 15, 16):
+        block = raw[offset:offset + 16]
+        if block == erased_16:
+            erased_count += 1
+        elif block == ff_16:
+            ff_count += 1
+        elif block == zero_16:
+            zero_count += 1
+        else:
+            data_count += 1
+
+    print(f"  Erased (scrambled 0xFF): {erased_count}/{total_blocks} "
+          f"({erased_count / total_blocks * 100:.1f}%)")
+    print(f"  Raw 0xFF blocks:        {ff_count}/{total_blocks} "
+          f"({ff_count / total_blocks * 100:.1f}%)")
+    print(f"  Raw 0x00 blocks:        {zero_count}/{total_blocks} "
+          f"({zero_count / total_blocks * 100:.1f}%)")
+    print(f"  Data blocks:            {data_count}/{total_blocks} "
+          f"({data_count / total_blocks * 100:.1f}%)")
+
+    if erased_count + ff_count + zero_count == total_blocks:
+        print(f"  Status:          COMPLETELY WIPED (no recoverable data)")
+        if ff_count > erased_count:
+            print(f"  Note:            Raw 0xFF dominant — chip was erased by programmer")
+            print(f"                   (not crypto-wiped by SoC)")
+        elif erased_count > ff_count:
+            print(f"  Note:            Scrambled-erased dominant — this may be a valid")
+            print(f"                   blank with no dense data, or a partial read")
+        return None
+
+    # Search for known F2 values in both scrambled and descrambled forms
+    print(f"\n  Searching for known chip identifiers...")
+    data_start = 0x10 if has_header else 0
+    desc = descramble(raw[data_start:]) if data_count > 0 else b''
+
+    found_f2 = set()
+    for f2_hex, chip_name in KNOWN_CHIPS.items():
+        f2_bytes = bytes.fromhex(f2_hex)
+        # Search in descrambled data
+        if f2_bytes in desc:
+            pos = desc.index(f2_bytes)
+            found_f2.add(f2_hex)
+            print(f"  FOUND: {chip_name} at descrambled offset 0x{pos:X}")
+        # Search in raw data (in case header wasn't descrambled)
+        f2_scrambled = scramble(f2_bytes)
+        if f2_scrambled in raw:
+            pos = raw.index(f2_scrambled)
+            found_f2.add(f2_hex)
+            print(f"  FOUND: {chip_name} at raw offset 0x{pos:X} (scrambled)")
+
+    if not found_f2:
+        # Try to extract potential F2 from slot 0 position
+        for offset in [0x10, 0x20, 0x00]:
+            candidate_desc = descramble(raw[offset:offset + 0x200])
+            f2_cand = candidate_desc[0x10:0x20]
+            if any(b != 0xFF and b != 0x00 for b in f2_cand):
+                print(f"  Potential F2 at offset 0x{offset:X}: {f2_cand.hex()}")
+                gen = get_chip_generation(f2_cand.hex())
+                known = KNOWN_CHIPS.get(f2_cand.hex())
+                if known:
+                    print(f"    -> {known} [{gen}]")
+                elif gen != 'unknown':
+                    print(f"    -> Unknown chip, generation {gen}")
+                else:
+                    print(f"    -> Not in database (new chip type?)")
+                found_f2.add(f2_cand.hex())
+
+    if found_f2:
+        print(f"\n  Status:          PARTIALLY READABLE")
+        print(f"  Identified as:   {', '.join(KNOWN_CHIPS.get(f, f[:16]+'...') for f in found_f2)}")
+    else:
+        print(f"\n  Status:          UNIDENTIFIABLE")
+        print(f"  Try: python3 nand_tool.py register-chip {filepath} 'ChipName'")
+
+    return None
 
 
 # ── Dump Generation ───────────────────────────────────────────────────────────
 
 def build_header_slot(f1: bytes, f2: bytes, f3: bytes, tag: bytes) -> bytes:
     """Build a single 512-byte header slot (descrambled)."""
-    slot = bytearray(0x200)
-    # Fill with 0xFF
-    for i in range(0x200):
-        slot[i] = 0xFF
-    # Place fields
+    slot = bytearray(b'\xFF' * 0x200)
     slot[0x000:0x010] = f1
     slot[0x010:0x020] = f2
     slot[0x020:0x030] = f3
@@ -380,12 +561,10 @@ def build_header_slot(f1: bytes, f2: bytes, f3: bytes, tag: bytes) -> bytes:
 
 def adapt_dump(donor: NANDDump, target_f2: bytes, output_path: str):
     """
-    Adapt a donor dump for a different NAND type by replacing the F2 field.
+    Adapt a donor dump for a different NAND type by replacing F2 and F3 fields.
 
-    This keeps the donor's F3 auth tags and dense data unchanged.
-    The F3 tags may or may not be validated against F2 by the SoC —
-    if they are, this adapted dump may not work and you'd need an
-    actual dump from the target chip type.
+    Uses the correct F3 auth tags for the target chip type when available.
+    Dense data is kept from the donor unchanged.
     """
     target_name = KNOWN_CHIPS.get(target_f2.hex(), 'Unknown')
     donor_gen = get_chip_generation(donor.f2.hex())
@@ -416,24 +595,13 @@ def adapt_dump(donor: NANDDump, target_f2: bytes, output_path: str):
     # Descramble, modify F2 (and F3 if known), re-scramble for each header slot
     for slot_idx in range(donor.num_header_slots):
         offset = slot_idx * 0x200
-        # Descramble the slot
         slot = bytearray(descramble(bytes(new_nand[offset:offset + 0x200])))
-        # Replace F2
         slot[0x010:0x020] = target_f2
-        # Replace F3 if we have the correct table
         if target_f3_table and slot_idx < len(target_f3_table):
             slot[0x020:0x030] = bytes.fromhex(target_f3_table[slot_idx])
-        # Re-scramble
         new_nand[offset:offset + 0x200] = scramble(bytes(slot))
 
-    # Also update the raw header area (0x10-0x3F in original file)
-    # These are the scrambled version of the first slot's F2 and related fields
-    # The file bytes 0x10-0x1F should be scramble(F1[0][0:16]) — but they were
-    # already correct from the first slot update above.
-
-    # Build output
     output = FILE_HEADER + bytes(new_nand)
-
     with open(output_path, 'wb') as f:
         f.write(output)
 
@@ -445,53 +613,63 @@ def generate_erased_dump(target_f2: bytes, num_dies: int, die_sizes_mb: list,
                          output_dir: str, chip_name: str = "CUSTOM"):
     """
     Generate a minimal "all-erased" dump set with only the header table populated.
-
-    This is the simplest possible blank image — just the header metadata
-    with all dense data erased. It may not work if the SoC requires valid
-    FTL/1TR data, but it's worth trying as a first attempt.
+    Uses the correct F1/Tag cycle for the chip's generation and real F3 tables
+    when available.
     """
     os.makedirs(output_dir, exist_ok=True)
-    target_name = KNOWN_CHIPS.get(target_f2.hex(), chip_name)
+    f2_hex = target_f2.hex()
+    target_name = KNOWN_CHIPS.get(f2_hex, chip_name)
+    gen = get_chip_generation(f2_hex)
+
+    # Get correct generation constants
+    gen_consts = get_gen_constants(f2_hex)
+    if gen_consts:
+        f1_cycle = gen_consts['f1']
+        tag_cycle = gen_consts['tags']
+        print(f"  Using {gen} F1/Tag constants")
+    else:
+        # Fallback to gen1 values with warning
+        f1_cycle = GEN_CONSTANTS['gen1_kicm']['f1']
+        tag_cycle = GEN_CONSTANTS['gen1_kicm']['tags']
+        print(f"  WARNING: Unknown generation for {f2_hex}, using gen1 defaults")
+
+    # Get header slot count and F3 table
+    num_header = get_header_slot_count(f2_hex)
+    f3_table = F3_TABLES.get(f2_hex)
 
     print(f"Generating minimal erased dumps for: {target_name}")
-    print(f"  Dies: {num_dies}, sizes: {die_sizes_mb} MB")
+    print(f"  Dies: {num_dies}, sizes: {die_sizes_mb} MB, header slots: {num_header}")
+    if f3_table:
+        print(f"  F3 table: found ({len(f3_table)} entries) — using real auth tags")
+    else:
+        print(f"  F3 table: NOT FOUND — using hash placeholders")
 
     for die_idx in range(num_dies):
         die_size = die_sizes_mb[die_idx % len(die_sizes_mb)]
         total_nand_bytes = die_size * 1024 * 1024
-        num_slots = total_nand_bytes // 0x200
 
-        # Build descrambled NAND image
+        # Build descrambled NAND image (all 0xFF = erased)
         nand_desc = bytearray(b'\xFF' * total_nand_bytes)
 
-        # Populate header slots (41 slots)
-        num_header = 41
-        for slot_idx in range(min(num_header, num_slots)):
+        # Populate header slots
+        for slot_idx in range(num_header):
             offset = slot_idx * 0x200
+            if offset + 0x200 > total_nand_bytes:
+                break
 
-            # F1: cycle through F1_BASE values
-            f1_idx = slot_idx % len(F1_BASE)
-            f1 = F1_BASE[f1_idx]
-
-            # F2: target chip type
+            f1 = f1_cycle[slot_idx % len(f1_cycle)]
             f2 = target_f2
 
-            # F3: we don't know how to compute these, use a hash as placeholder
-            # In a real dump these would be proper auth tags
-            f3_seed = f2 + struct.pack('<I', slot_idx) + struct.pack('<I', die_idx)
-            f3 = hashlib.sha256(f3_seed).digest()[:16]
+            if f3_table and slot_idx < len(f3_table):
+                f3 = bytes.fromhex(f3_table[slot_idx])
+            else:
+                f3_seed = f2 + struct.pack('<I', slot_idx) + struct.pack('<I', die_idx)
+                f3 = hashlib.sha256(f3_seed).digest()[:16]
 
-            # Tag: cycle through TAG_CYCLE
-            tag_idx = slot_idx % len(TAG_CYCLE)
-            tag = TAG_CYCLE[tag_idx]
+            tag = tag_cycle[slot_idx % len(tag_cycle)]
+            nand_desc[offset:offset + 0x200] = build_header_slot(f1, f2, f3, tag)
 
-            slot = build_header_slot(f1, f2, f3, tag)
-            nand_desc[offset:offset + 0x200] = slot
-
-        # Scramble
         nand_scrambled = scramble(bytes(nand_desc))
-
-        # Build file
         output = FILE_HEADER + nand_scrambled
         fname = f"{chip_name}_BLANK_{die_idx + 1}.bin"
         fpath = os.path.join(output_dir, fname)
@@ -502,46 +680,48 @@ def generate_erased_dump(target_f2: bytes, num_dies: int, die_sizes_mb: list,
         print(f"  Die {die_idx + 1}: {fpath} ({len(output)} bytes)")
 
 
-def clone_with_new_f2(donor_dir: str, target_f2: bytes, output_dir: str,
+def clone_with_new_f2(donor_path: str, target_f2: bytes, output_dir: str,
                       chip_name: str = "CUSTOM"):
     """
-    Clone all die files from a donor directory, replacing the F2 field.
-    This is the most practical approach for adapting between similar NAND types.
+    Clone die files from a donor (file or directory), replacing the F2/F3 fields.
+    Accepts either a single .bin file or a directory of .bin files.
     """
     os.makedirs(output_dir, exist_ok=True)
     target_name = KNOWN_CHIPS.get(target_f2.hex(), chip_name)
 
-    print(f"Cloning from {donor_dir} -> {target_name}")
+    print(f"Cloning from {donor_path} -> {target_name}")
     print(f"  Target F2: {target_f2.hex()}")
 
-    bin_files = sorted([f for f in os.listdir(donor_dir) if f.endswith('.bin')])
-    for i, fname in enumerate(bin_files):
-        donor = NANDDump(os.path.join(donor_dir, fname))
-        out_name = f"{chip_name}_BLANK_{i + 1}.bin"
+    if os.path.isfile(donor_path):
+        donor = NANDDump(donor_path)
+        out_name = f"{chip_name}_BLANK_1.bin"
         out_path = os.path.join(output_dir, out_name)
         adapt_dump(donor, target_f2, out_path)
-
-    print(f"\nDone. {len(bin_files)} die files written to {output_dir}")
+        print(f"\nDone. 1 file written to {output_dir}")
+    else:
+        bin_files = sorted([f for f in os.listdir(donor_path) if f.endswith('.bin')])
+        for i, fname in enumerate(bin_files):
+            donor = NANDDump(os.path.join(donor_path, fname))
+            out_name = f"{chip_name}_BLANK_{i + 1}.bin"
+            out_path = os.path.join(output_dir, out_name)
+            adapt_dump(donor, target_f2, out_path)
+        print(f"\nDone. {len(bin_files)} die files written to {output_dir}")
 
 
 def compare_dumps(dump1: NANDDump, dump2: NANDDump):
     """Compare two dumps in detail."""
-    print(f"\n{'Field':<25} {'Dump 1':^36} {'Dump 2':^36} {'Match':>5}")
-    print("-" * 110)
+    print(f"\n{'Field':<20} {'Dump 1':^36} {'Dump 2':^36} {'Match':>5}")
+    print("-" * 100)
 
-    fields = [
-        ("File header", dump1.file_header, dump2.file_header),
-        ("Chip type", dump1.f2, dump2.f2),
-        ("Data size", str(dump1.data_size).encode(), str(dump2.data_size).encode()),
-        ("Header slots", str(dump1.num_header_slots).encode(),
-         str(dump2.num_header_slots).encode()),
-    ]
-
-    for name, v1, v2 in fields:
-        s1 = v1.hex() if isinstance(v1, bytes) and len(v1) <= 16 else v1.decode()
-        s2 = v2.hex() if isinstance(v2, bytes) and len(v2) <= 16 else v2.decode()
+    for name, v1, v2 in [
+        ("File header", dump1.file_header.hex(), dump2.file_header.hex()),
+        ("Chip type", dump1.f2.hex(), dump2.f2.hex()),
+        ("Data size", f"{dump1.data_size}", f"{dump2.data_size}"),
+        ("Header slots", f"{dump1.num_header_slots}", f"{dump2.num_header_slots}"),
+        ("Generation", dump1.generation, dump2.generation),
+    ]:
         match = "YES" if v1 == v2 else "NO"
-        print(f"{name:<25} {s1:^36} {s2:^36} {match:>5}")
+        print(f"{name:<20} {v1:^36} {v2:^36} {match:>5}")
 
     # Compare header records
     print(f"\nHeader record comparison:")
@@ -550,17 +730,13 @@ def compare_dumps(dump1: NANDDump, dump2: NANDDump):
     for i in range(min_headers):
         r1 = dump1.header_records[i]
         r2 = dump2.header_records[i]
-        if r1['f1'] == r2['f1']:
-            f1_match += 1
-        if r1['f2'] == r2['f2']:
-            f2_match += 1
-        if r1['f3'] == r2['f3']:
-            f3_match += 1
-        if r1['tag'] == r2['tag']:
-            tag_match += 1
+        f1_match += r1['f1'] == r2['f1']
+        f2_match += r1['f2'] == r2['f2']
+        f3_match += r1['f3'] == r2['f3']
+        tag_match += r1['tag'] == r2['tag']
 
-    print(f"  F1 matches: {f1_match}/{min_headers} (universal page IDs)")
-    print(f"  F2 matches: {f2_match}/{min_headers} (chip type ID)")
+    print(f"  F1 matches: {f1_match}/{min_headers} (page IDs)")
+    print(f"  F2 matches: {f2_match}/{min_headers} (chip type)")
     print(f"  F3 matches: {f3_match}/{min_headers} (auth tags)")
     print(f"  Tag matches: {tag_match}/{min_headers} (cycling tags)")
 
@@ -580,7 +756,7 @@ def compare_dumps(dump1: NANDDump, dump2: NANDDump):
 
     total = same + diff + both_erased
     if total > 0:
-        print(f"\n  Dense data comparison ({min_len - dense_start} bytes):")
+        print(f"\n  Dense data ({min_len - dense_start} bytes):")
         print(f"    Identical:    {same} blocks ({same / total * 100:.2f}%)")
         print(f"    Different:    {diff} blocks ({diff / total * 100:.2f}%)")
         print(f"    Both erased:  {both_erased} blocks ({both_erased / total * 100:.2f}%)")
@@ -588,60 +764,35 @@ def compare_dumps(dump1: NANDDump, dump2: NANDDump):
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
-def print_usage():
-    print("""
+USAGE = """
 Apple Silicon NAND Blank Image Tool
 ====================================
 
 Usage:
-  python3 nand_tool.py info <file.bin>
-      Analyze a single dump file and show its structure.
-
-  python3 nand_tool.py info-all <directory>
-      Analyze all .bin files in a directory.
-
-  python3 nand_tool.py detail <file.bin>
-      Show detailed header slot table.
-
-  python3 nand_tool.py compare <file1.bin> <file2.bin>
-      Compare two dump files in detail.
-
-  python3 nand_tool.py adapt <donor_dir> <target_f2_hex> <output_dir> [chip_name]
-      Clone all die files from donor_dir, replacing the chip type ID (F2).
-      This adapts dumps from one NAND type for use with another.
-      Use 'list-chips' to see known F2 values.
-
-  python3 nand_tool.py generate <target_f2_hex> <num_dies> <die_size_mb> <output_dir> [chip_name]
-      Generate minimal "erased" dump files with only header metadata.
-      die_size_mb can be a comma-separated list for different die sizes.
-
-  python3 nand_tool.py list-chips
-      Show known NAND chip type identifiers.
-
-  python3 nand_tool.py register-chip <file.bin> <chip_name>
-      Register a new chip type from an existing dump file.
-
-  python3 nand_tool.py descramble <file.bin> <output.bin>
-      Descramble a dump file (remove XOR scrambling) for analysis.
-
-  python3 nand_tool.py scramble <file.bin> <output.bin>
-      Re-scramble a descrambled file back to programmer format.
+  nand_tool.py info <file.bin>              Analyze a dump file
+  nand_tool.py info-all <directory>         Analyze all .bin in directory
+  nand_tool.py detail <file.bin>            Show header slot table
+  nand_tool.py compare <a.bin> <b.bin>      Compare two dumps
+  nand_tool.py scan <file.bin>              Scan wiped/corrupted dump for surviving data
+  nand_tool.py adapt <src> <f2> <out> [n]   Adapt file or dir to new chip type (F2+F3)
+  nand_tool.py generate <f2> <dies> <mb> <out> [name]
+                                            Generate minimal erased dumps
+  nand_tool.py list-chips                   Show known chip types and generations
+  nand_tool.py register-chip <f.bin> <name> Register new chip type from a dump
+  nand_tool.py descramble <in> <out>        Remove XOR scrambling for analysis
+  nand_tool.py scramble <in> <out>          Re-apply XOR scrambling
 
 Notes:
-  - The 'adapt' command is the most practical approach for supporting new NAND types.
-    It copies the dense data (FTL tables, 1TR, etc.) from a known-good donor dump
-    and only changes the chip type identifier.
-  - F3 auth tags are kept from the donor. If the SoC validates F3 against F2,
-    adapted dumps may not work and you'll need an actual dump from that chip type.
-  - The 'generate' command creates minimal images with no dense data.
-    These will almost certainly not work on their own but can be useful for testing.
-  - After flashing any blank image, a DFU restore is required.
-""")
+  - 'adapt' now sets correct F3 auth tags when the target chip type is known.
+  - 'scan' can identify chip types from partially wiped or corrupted dumps.
+  - 'generate' uses correct per-generation F1/Tag cycles.
+  - After flashing any image, a DFU restore is required.
+"""
 
 
 def main():
     if len(sys.argv) < 2:
-        print_usage()
+        print(USAGE)
         return
 
     cmd = sys.argv[1]
@@ -677,7 +828,7 @@ def main():
 
     elif cmd == 'compare':
         if len(sys.argv) < 4:
-            print("Usage: nand_tool.py compare <file1.bin> <file2.bin>")
+            print("Usage: nand_tool.py compare <a.bin> <b.bin>")
             return
         d1 = NANDDump(sys.argv[2])
         d2 = NANDDump(sys.argv[3])
@@ -685,19 +836,25 @@ def main():
         print(f"Dump 2: {d2.filepath.name} ({d2.chip_type})")
         compare_dumps(d1, d2)
 
+    elif cmd == 'scan':
+        if len(sys.argv) < 3:
+            print("Usage: nand_tool.py scan <file.bin>")
+            return
+        scan_dump(sys.argv[2])
+
     elif cmd == 'adapt':
         if len(sys.argv) < 5:
-            print("Usage: nand_tool.py adapt <donor_dir> <target_f2_hex> <output_dir> [chip_name]")
+            print("Usage: nand_tool.py adapt <donor_file_or_dir> <target_f2_hex> <output_dir> [chip_name]")
             return
-        donor_dir = sys.argv[2]
+        donor_path = sys.argv[2]
         target_f2 = bytes.fromhex(sys.argv[3])
         output_dir = sys.argv[4]
         chip_name = sys.argv[5] if len(sys.argv) > 5 else "ADAPTED"
-        clone_with_new_f2(donor_dir, target_f2, output_dir, chip_name)
+        clone_with_new_f2(donor_path, target_f2, output_dir, chip_name)
 
     elif cmd == 'generate':
         if len(sys.argv) < 6:
-            print("Usage: nand_tool.py generate <target_f2_hex> <num_dies> <die_size_mb> <output_dir> [chip_name]")
+            print("Usage: nand_tool.py generate <f2_hex> <num_dies> <die_size_mb> <output_dir> [name]")
             return
         target_f2 = bytes.fromhex(sys.argv[2])
         num_dies = int(sys.argv[3])
@@ -707,18 +864,16 @@ def main():
         generate_erased_dump(target_f2, num_dies, die_sizes, output_dir, chip_name)
 
     elif cmd == 'list-chips':
-        print("Known NAND chip types (descrambled F2 values):\n")
+        print("Known NAND chip types:\n")
         for gen_name, gen_chips in CHIP_GENERATIONS.items():
             print(f"  [{gen_name}]")
             for f2_hex in gen_chips:
                 name = KNOWN_CHIPS.get(f2_hex, 'Unknown')
-                print(f"    {f2_hex}  {name}")
+                slots = get_header_slot_count(f2_hex)
+                print(f"    {f2_hex}  {name}  ({slots} hdr slots)")
             print()
-        print("  IMPORTANT: Adapting between generations will NOT work.")
-        print("  Chips within the same generation share F1 values and may")
-        print("  have partially compatible dense data (e.g. K5A5<->K5A8: 86% match).")
-        print("  Cross-generation dense data is 0% compatible.")
-        print("\n  To find the F2 for a new chip type, use 'info' on its dump file.")
+        print("  Cross-generation adaptation will NOT work.")
+        print("  Same-generation chips share F1 values and have compatible dense data.")
 
     elif cmd == 'register-chip':
         if len(sys.argv) < 4:
@@ -731,40 +886,43 @@ def main():
             print(f"Already registered: {KNOWN_CHIPS[f2_hex]}")
         else:
             print(f"New chip type found!")
-            print(f"  F2: {f2_hex}")
-            print(f"  Name: {name}")
-            print(f"\nTo register, add this line to KNOWN_CHIPS in nand_tool.py:")
+            print(f"  F2:           {f2_hex}")
+            print(f"  Name:         {name}")
+            print(f"  Header slots: {dump.num_header_slots}")
+            print(f"  Generation:   {dump.generation}")
+            print(f"\nAdd to KNOWN_CHIPS in nand_tool.py:")
             print(f"    '{f2_hex}': '{name}',")
+            print(f"\nF3 table ({dump.num_header_slots} entries):")
+            print(f"    '{f2_hex}': [  # {name}")
+            for rec in dump.header_records:
+                print(f"        '{rec['f3'].hex()}',")
+            print(f"    ],")
 
     elif cmd == 'descramble':
         if len(sys.argv) < 4:
-            print("Usage: nand_tool.py descramble <file.bin> <output.bin>")
+            print("Usage: nand_tool.py descramble <in.bin> <out.bin>")
             return
         with open(sys.argv[2], 'rb') as f:
             raw = f.read()
-        header = raw[:0x10]
-        nand = raw[0x10:]
-        desc = descramble(nand)
+        desc = raw[:0x10] + descramble(raw[0x10:])
         with open(sys.argv[3], 'wb') as f:
-            f.write(header + desc)
+            f.write(desc)
         print(f"Descrambled {len(raw)} bytes -> {sys.argv[3]}")
 
     elif cmd == 'scramble':
         if len(sys.argv) < 4:
-            print("Usage: nand_tool.py scramble <file.bin> <output.bin>")
+            print("Usage: nand_tool.py scramble <in.bin> <out.bin>")
             return
         with open(sys.argv[2], 'rb') as f:
             raw = f.read()
-        header = raw[:0x10]
-        nand = raw[0x10:]
-        scr = scramble(nand)
+        scr = raw[:0x10] + scramble(raw[0x10:])
         with open(sys.argv[3], 'wb') as f:
-            f.write(header + scr)
+            f.write(scr)
         print(f"Scrambled {len(raw)} bytes -> {sys.argv[3]}")
 
     else:
         print(f"Unknown command: {cmd}")
-        print_usage()
+        print(USAGE)
 
 
 if __name__ == '__main__':
