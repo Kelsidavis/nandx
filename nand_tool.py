@@ -36,10 +36,12 @@ SCRAMBLE_KEY = bytes(b ^ 0xFF for b in ERASED_PATTERN)
 # Known chip type F2 identifiers (descrambled)
 KNOWN_CHIPS = {
     # Generation 1: KICM series (older Apple Silicon, M1/M2 era)
-    'e4569cdf058135a8a80096adba963bf1': 'KICM223 (Kioxia 1TB)',
+    # Master chips (NAND0) — over-provisioned with extra spare blocks
+    'f007cc44bdac94bf15111ec5bc88d006': 'KICM233 (Kioxia 320GB master, used as 256GB)',
+    # Slave chips (NAND1+) — standard capacity
+    'd3bc36674d8ec40531c35ffec6f04c91': 'KICM227 (Kioxia 256GB slave)',
     '098816c0854210564584afd0f5c1e6c1': 'KICM229 (Kioxia 512GB)',
-    'f007cc44bdac94bf15111ec5bc88d006': 'KICM233 (Kioxia 256GB)',
-    'd3bc36674d8ec40531c35ffec6f04c91': 'KICM227 (Kioxia 256GB)',
+    'e4569cdf058135a8a80096adba963bf1': 'KICM223 (Kioxia 1TB)',
     # Generation 2: K5A series (newer Apple Silicon, M3+ era)
     'ba5cb781c2ac883db41f1636aeb804d5': 'K5A4 (Kioxia 256GB, A2901)',
     'fea75da1118971de1d3d621be63ea23e': 'K5A5 (Kioxia)',
