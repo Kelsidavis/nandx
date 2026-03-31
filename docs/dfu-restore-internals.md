@@ -188,3 +188,82 @@ Full disassembly of `restored_external` with Ghidra/IDA would reveal:
 2. How `create_partition_for_apfs` calculates block counts for over-provisioning
 3. Whether the JEDEC ID influences partition layout decisions
 4. What specific NAND state causes `clean_NAND` to fail vs succeed
+
+## clean_NAND Disassembly (function at 0x24280)
+
+Reverse-engineered from ARM64e Mach-O binary, macOS 12.0.1.
+
+### Pseudocode
+
+```c
+int clean_NAND(void *ctx, void *params) {
+    log("entering clean_NAND");
+    
+    // 1. Look up storage device from restore parameters
+    if (!lookup_storage_info(params)) return error;
+    
+    // 2. Get device node path (e.g., /dev/rdisk0)
+    char devnode[32];
+    if (!get_device_node(devnode, 32)) {
+        log("couldn't get storage media device node");
+        return error;
+    }
+    if (devnode[0] == '\0') {
+        log("Device node was an empty string?");
+        return error;
+    }
+    
+    // 3. Open the storage device
+    int fd = open_storage_device(devnode, 0);
+    if (fd < 0) {
+        log("unable to open %s: %s", devnode, strerror(errno));
+        return error;
+    }
+    
+    // 4. Issue the NAND clean ioctl
+    uint8_t params[16] = {0};
+    if (ioctl(fd, 0x8010641A, params) == -1) {
+        return error;
+    }
+    
+    log("NAND format complete");
+    return 0;
+}
+```
+
+### The ioctl 0x8010641A
+
+This is the critical command that cleans the NAND:
+- `0x80` = IOC_IN (write direction)
+- `0x10` = 16 bytes parameter size
+- `0x641A` = APFS subsystem command (likely APFS_CONTAINER_DESTROY)
+
+This ioctl tells the ANS controller to destroy all existing APFS containers
+and prepare the NAND for a fresh partition layout.
+
+### Where YOUR Failure Happens
+
+The failure is NOT in clean_NAND itself. It's BEFORE clean_NAND gets called.
+The ANS controller must first initialize and present a block device (/dev/rdisk0).
+If the NAND contains garbage data that the ANS controller can't parse into a
+valid block device, the failure occurs at:
+
+```
+"NAND failed to initialize: %s" (at 0x3248C)
+```
+
+This is the ANS controller saying: "I can see the physical NAND chips via JEDEC,
+but I can't build a logical block device from the data on them."
+
+### Implication for Wiped Chips
+
+The ANS controller (running in the SoC, not in restored_external) needs to be
+able to construct a basic block device from whatever is on the NAND. For truly
+blank chips, it creates one from scratch. For wiped chips with garbage residual
+data, it tries to interpret the garbage as FTL structures and fails.
+
+The fix: ensure the NAND is in a state the ANS controller can handle:
+1. True full erase (every page, every block, including spare areas) — ANS treats
+   this as a new chip
+2. OR: write valid FTL initialization data that ANS can parse — this is what the
+   "blank" dump files provide
