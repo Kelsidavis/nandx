@@ -764,6 +764,78 @@ def compare_dumps(dump1: NANDDump, dump2: NANDDump):
         print(f"    Both erased:  {both_erased} blocks ({both_erased / total * 100:.2f}%)")
 
 
+
+def generate_true_blank(size_mb: int, output_path: str):
+    """
+    Generate a dump file that represents a truly blank/erased NAND.
+    Every page is the erased pattern (scrambled 0xFF).
+    The ANS firmware should see namespace_count = 0 → "Blank NAND".
+    """
+    total = size_mb * 1024 * 1024
+    # Erased NAND = repeating ERASED_PATTERN (scrambled 0xFF)
+    erased_page = ERASED_PATTERN * (0x200 // 16)
+    num_slots = total // 0x200
+    nand_data = erased_page * num_slots
+
+    output = FILE_HEADER + nand_data
+    with open(output_path, 'wb') as f:
+        f.write(output)
+    print(f"Generated true-blank image: {output_path} ({len(output)} bytes)")
+    print(f"  All pages = erased pattern (scrambled 0xFF)")
+    print(f"  ANS firmware should see: namespace_count = 0 → blank")
+
+
+def generate_minimal_ftl(f2_hex: str, size_mb: int, output_path: str):
+    """
+    Generate a dump with ONLY the minimum FTL header (header slots with
+    correct F2/F3) and everything else erased. This is the smallest
+    possible image that should make the ANS firmware see a valid non-blank
+    NAND with namespace metadata.
+    """
+    f3_table = F3_TABLES.get(f2_hex)
+    gen_consts = get_gen_constants(f2_hex)
+    chip_name = KNOWN_CHIPS.get(f2_hex, f'Unknown ({f2_hex[:16]}...)')
+
+    if not f3_table:
+        print(f"ERROR: No F3 table for {f2_hex}. Need a dump to register this chip type.")
+        return
+    if not gen_consts:
+        print(f"ERROR: No generation constants for {f2_hex}.")
+        return
+
+    num_header = len(f3_table)
+    total = size_mb * 1024 * 1024
+    target_f2 = bytes.fromhex(f2_hex)
+
+    print(f"Generating minimal FTL header for: {chip_name}")
+    print(f"  F2: {f2_hex}")
+    print(f"  Header slots: {num_header} ({num_header * 512} bytes)")
+    print(f"  Total image: {size_mb} MB")
+
+    # Build descrambled image: header slots + all-0xFF (erased)
+    nand_desc = bytearray(b'\xFF' * total)
+
+    f1_cycle = gen_consts['f1']
+    tag_cycle = gen_consts['tags']
+
+    for slot_idx in range(num_header):
+        offset = slot_idx * 0x200
+        f1 = f1_cycle[slot_idx % len(f1_cycle)]
+        f2 = target_f2
+        f3 = bytes.fromhex(f3_table[slot_idx])
+        tag = tag_cycle[slot_idx % len(tag_cycle)]
+        nand_desc[offset:offset + 0x200] = build_header_slot(f1, f2, f3, tag)
+
+    nand_scrambled = scramble(bytes(nand_desc))
+    output = FILE_HEADER + nand_scrambled
+
+    with open(output_path, 'wb') as f:
+        f.write(output)
+    print(f"  Written: {output_path} ({len(output)} bytes)")
+    print(f"  Header: {num_header} slots with valid F2+F3")
+    print(f"  Dense data: all erased")
+    print(f"  ANS firmware should see: namespace_count > 0 → non-blank → load FTL")
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 USAGE = """
@@ -778,14 +850,24 @@ Usage:
   nand_tool.py scan <file.bin>              Scan wiped/corrupted dump for surviving data
   nand_tool.py adapt <src> <f2> <out> [n]   Adapt file or dir to new chip type (F2+F3)
   nand_tool.py generate <f2> <dies> <mb> <out> [name]
-                                            Generate minimal erased dumps
+                                            Generate erased dumps with header metadata
+  nand_tool.py true-blank <size_mb> <out>   Generate fully erased image (no metadata)
+  nand_tool.py min-ftl <f2> <size_mb> <out> Generate minimal FTL header + erased data
   nand_tool.py list-chips                   Show known chip types and generations
   nand_tool.py register-chip <f.bin> <name> Register new chip type from a dump
   nand_tool.py descramble <in> <out>        Remove XOR scrambling for analysis
   nand_tool.py scramble <in> <out>          Re-apply XOR scrambling
 
+Experimental (for wiped/stuck chips):
+  true-blank   Generates an image where every page is the erased pattern.
+               The ANS firmware should see namespace_count=0 → "Blank NAND".
+               Use this when a chip erase didn't fully clear metadata.
+  min-ftl      Generates the smallest valid FTL header (~5-20KB) with correct
+               F2+F3 auth tags. Everything else is erased. The ANS firmware
+               should see valid namespace metadata and proceed to clean_NAND.
+
 Notes:
-  - 'adapt' now sets correct F3 auth tags when the target chip type is known.
+  - 'adapt' sets correct F3 auth tags when the target chip type is known.
   - 'scan' can identify chip types from partially wiped or corrupted dumps.
   - 'generate' uses correct per-generation F1/Tag cycles.
   - After flashing any image, a DFU restore is required.
@@ -900,6 +982,23 @@ def main():
                 print(f"        '{rec['f3'].hex()}',")
             print(f"    ],")
 
+    elif cmd == 'true-blank':
+        if len(sys.argv) < 4:
+            print("Usage: nand_tool.py true-blank <size_mb> <output.bin>")
+            print("  Generates a fully erased image (every page = erased pattern).")
+            print("  Flash this to make the ANS firmware see a blank NAND.")
+            return
+        size_mb = int(sys.argv[2])
+        generate_true_blank(size_mb, sys.argv[3])
+
+    elif cmd == 'min-ftl':
+        if len(sys.argv) < 5:
+            print("Usage: nand_tool.py min-ftl <f2_hex> <size_mb> <output.bin>")
+            print("  Generates minimal valid FTL header with everything else erased.")
+            print("  Use 'list-chips' to find F2 values for known chip types.")
+            return
+        generate_minimal_ftl(sys.argv[2], int(sys.argv[3]), sys.argv[4])
+
     elif cmd == 'descramble':
         if len(sys.argv) < 4:
             print("Usage: nand_tool.py descramble <in.bin> <out.bin>")
@@ -929,3 +1028,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
