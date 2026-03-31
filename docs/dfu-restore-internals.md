@@ -267,3 +267,79 @@ The fix: ensure the NAND is in a state the ANS controller can handle:
    this as a new chip
 2. OR: write valid FTL initialization data that ANS can parse — this is what the
    "blank" dump files provide
+
+## DetermineBlankPart() Disassembly
+
+Function: `bool AppleEmbeddedNVMeController::DetermineBlankPart()`
+Location: kernelcache file offset 0x2B4DBD8 (480 bytes)
+
+### How Blank Detection Works
+
+The kernel does NOT read the NAND directly. It sends an NVMe vendor-specific
+command (opcode 0x11) to the ANS controller firmware and checks the response:
+
+```c
+bool DetermineBlankPart() {
+    cmd = allocate_nvme_command(0x11, 4096, 4096);
+    send_identify_command(cmd, 1);
+    execute_and_wait(cmd);
+    response = get_response(cmd);
+    
+    namespace_count = *(uint32_t*)(response + 516);  // offset 0x204
+    
+    if (namespace_count != 0) {
+        log("Non-Blank NAND, Number of namespaces - %d", namespace_count);
+        return false;
+    } else {
+        log("Blank NAND, Number of namespaces - %d", namespace_count);
+        this->isBlank = true;
+        return true;
+    }
+}
+```
+
+### The Decision Chain
+
+```
+ANS firmware (SoC coprocessor) reads raw NAND pages
+  → Interprets FTL metadata structures
+  → Counts valid namespaces
+  → Reports namespace_count to kernel via NVMe response
+
+Kernel reads namespace_count:
+  == 0 → blank path → dummy block device → DFU restore proceeds
+  != 0 → non-blank path → attempts FTL load → success or failure
+```
+
+### Why Wiped Chips Fail
+
+The ANS firmware reads garbage data from wiped chips. If any of it
+resembles namespace metadata (namespace_count != 0), the firmware
+attempts to load the FTL structures. Since they're corrupted, the
+load fails → "NAND Controller Init Failed" → DFU aborts at 40%.
+
+### Why Dump Files Work
+
+The dump files contain valid FTL structures with correct:
+- Namespace definitions (count > 0)
+- FTL revision numbers
+- ECC version
+- DM version
+- Block allocation tables
+
+The ANS firmware reads these, finds valid metadata, loads the FTL
+successfully, and presents a working block device. Then clean_NAND
+issues ioctl 0x8010641A to destroy and recreate the APFS containers.
+
+### Practical Implications
+
+To fix wiped chips, you need to either:
+1. Ensure the ANS firmware reads namespace_count as 0 (true blank state)
+2. Provide valid FTL metadata that the ANS firmware can load
+
+Option 1 requires understanding what specific NAND page patterns the
+ANS firmware interprets as "no namespaces". A full block-level erase
+that covers ALL pages including metadata pages should achieve this.
+
+Option 2 is what the community dump files provide — but requires dumps
+from the correct chip type (Kioxia vs Hynix have different FTL layouts).
