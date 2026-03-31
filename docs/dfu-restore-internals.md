@@ -97,3 +97,94 @@ because it's not Apple-signed.
 - https://github.com/blacktop/ipsw
 - https://theapplewiki.com/wiki/Decrypting_Firmwares
 - https://oliviagallucci.com/boot-rom-security-on-silicon-macs-m1-m2-m3/
+
+## restored_external Binary Analysis (macOS 12.0.1 Monterey)
+
+Extracted from: `UniversalMac_12.0.1_21A558_Restore.ipsw`
+Path in ramdisk: `usr/local/bin/restored_external` (1.9MB ARM64e Mach-O)
+
+### NAND Initialization Flow (from string analysis)
+
+```
+1. Searching for NAND service
+2. Found NAND service: %s
+3. NAND initialized. Waiting for devnode.
+   OR: NAND failed to initialize: %s  ← POSSIBLE FAILURE POINT
+4. asp_nand_set_writable
+5. clean_NAND / clean_nand
+   OR: failed to clean NAND
+6. NAND format complete
+7. update_NAND → update_NAND_firmware
+   - Checks FTL version → "FTL version mismatch. Erase install required"
+   - Checks ECC/DM version → "ECC or DM version mismatch"
+8. create_filesystem_partitions
+   - create_partition_for_apfs
+   - create_iboot_system_container_filesystems (ISC = disk0s1)
+   - create_apfs_filesystems
+   - create_recovery_os_apfs_filesystems
+   - create_volume_group
+9. format_effaceable_storage
+10. ASR image streaming (macOS root filesystem)
+```
+
+### Key NAND Controllers Supported
+
+- `AppleANS2NVMeController` — standard M1 ANS
+- `AppleANS2CGNVMeController` — variant
+- `AppleANS3NVMeController` — M2/M3+ ANS
+
+### Critical Function: `clean_NAND`
+
+This function runs BEFORE partition creation. It appears to be the step that
+prepares the NAND for a fresh install. If the NAND has residual data that
+confuses this step, the restore fails.
+
+The string `"failed to reserve space for overprovisioning"` suggests that
+the clean/format step needs to understand the physical NAND geometry to set
+up the spare block pool correctly.
+
+### Error That Likely Causes 40% Failure
+
+Most probable failure path for wiped chips:
+```
+NAND initialized → clean_NAND → "failed to clean NAND"
+  OR
+clean_NAND OK → create_filesystem_partitions → 
+  "failed to create APFS filesystem partitions during APFS Erase Install"
+  OR
+  "failed to reserve space for overprovisioning"
+```
+
+### Effaceable Storage
+
+The restore also manages "effaceable storage" — a special NAND region used
+for storing encryption keys that can be securely destroyed:
+```
+format_effaceable_storage
+effaceable storage formatted successfully
+effaceable storage is formatted, clearing it
+Device does not support effaceable storage. Skipping effaceable format.
+```
+
+### Over-Provisioning Reference
+
+The string `"failed to reserve space for overprovisioning"` confirms our
+earlier finding that the SoC actively manages over-provisioning. The master
+chip (KICM232/KICM233) with extra raw capacity is where this spare pool
+is allocated during restore.
+
+### Dual-SPI NAND Support
+
+```
+supports_dual_SPI_NAND
++[MSUBootFirmwareUpdater supportsDualSPINAND]
+```
+Some configurations use dual SPI NAND for boot firmware redundancy.
+
+### Next Steps
+
+Full disassembly of `restored_external` with Ghidra/IDA would reveal:
+1. What `clean_NAND` actually does — does it erase all blocks? Check for existing data?
+2. How `create_partition_for_apfs` calculates block counts for over-provisioning
+3. Whether the JEDEC ID influences partition layout decisions
+4. What specific NAND state causes `clean_NAND` to fail vs succeed

@@ -11,3 +11,6 @@ output/
 
 # Zip archives (keep extracted bins, not zips)
 *.zip
+
+# Research artifacts (large)
+research/*.dmg
