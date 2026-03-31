@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+__MACOSX/
+
+# Output
+output/
+
+# Zip archives (keep extracted bins, not zips)
+*.zip
