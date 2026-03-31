@@ -170,3 +170,62 @@ Recommended order based on effort vs likelihood of success:
 6. **Approach 5 (clog mismatch)** — requires more reverse engineering
 7. **Approach 8 (partial erase)** — surgical approach
 8. **Approach 6 (FPGA emulator)** — nuclear option, most work but most reward
+
+## Approach 9: DTK Firmware Analysis — Validation Evolution
+
+Comparing the DTK beta 1 kernelcache (macOS 11.0, build 20A5299w, June 2020)
+with the M1 Monterey kernelcache (12.0.1, build 21A558, October 2021) reveals
+that Apple **added 13 new validation checks** between the DTK and M1 production:
+
+### Error messages ONLY in M1, absent from DTK:
+
+```
+Incompatible build downgrade due to NAND Util Format, cannot install this build.
+Invalid NAND FW update sequence.
+Invalid namespace configuration or size.
+Invalid number of namespaces.
+NAND FW update failed to activate, request retry.
+NAND Format changed, erase install required for this build.
+NAND failed to boot after update.
+No NAND detected or invalid response from NAND chips.
+Required NAND FW was not updated (fatal).
+The NAND packages are in the wrong order due to geometry.
+  Higher die count NAND must be placed in the first PCIe lanes
+  before lower die count NAND.
+The NAND packages are in the wrong order from a previous format.
+  NAND chips can be moved machines, but must be kept in the same order.
+This NAND configuration has incompatible packages.
+We did not detect any valid NAND devices in this system.
+```
+
+### Implications
+
+1. **The DTK firmware was much more lenient** — it lacked geometry validation,
+   ordering checks, and format compatibility checks. The earliest macOS might
+   handle corrupted/wiped NAND better.
+
+2. **The Big Sur 11.0.1 IPSW (first M1 release) is the best downgrade target** —
+   it's between the DTK (no checks) and Monterey (all checks). Some validations
+   may not yet be present.
+
+3. **FTL metadata encodes chip position** — "NAND chips can be moved machines,
+   but must be kept in the same order" means the dump files are position-aware.
+   You can't swap UN000 and UN100 dumps.
+
+4. **Geometry validation is strict** — "Higher die count NAND must be placed in
+   the first PCIe lanes" confirms master chip (KICM232/233) MUST be in UN000.
+
+5. **Cross-machine transfer IS supported** — "NAND chips can be moved machines"
+   is explicit confirmation that donor chips from other Macs work, as long as
+   chip order is preserved.
+
+### Try This
+
+Download Big Sur 11.0.1 (the FIRST M1 macOS) and try restoring with it:
+```
+http://updates-http.cdn-apple.com/2020FallFCS/fullrestores/001-79706/93A4C43C-2B45-47AF-84EA-794F8886B85C/UniversalMac_11.0.1_20B29_Restore.ipsw
+```
+
+This predates many of the strict validation checks added in later macOS versions.
+The ANS firmware in 11.0.1 may be lenient enough to handle wiped chips that later
+versions reject.
