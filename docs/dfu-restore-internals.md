@@ -343,3 +343,74 @@ that covers ALL pages including metadata pages should achieve this.
 
 Option 2 is what the community dump files provide — but requires dumps
 from the correct chip type (Kioxia vs Hynix have different FTL layouts).
+
+## The Scrambling / Erase Problem
+
+### NAND Data Randomizer
+
+Modern NAND chips have a hardware data randomizer (LFSR-based XOR) to prevent
+bit patterns that cause cell-to-cell interference. This operates transparently:
+
+```
+WRITE path: host_data → XOR with randomizer → stored on physical cells
+READ path:  physical cells → XOR with randomizer → host_data
+```
+
+For erased pages (hardware block erase):
+```
+Physical cells = all 0xFF (transistors in erased state)
+Read through randomizer = 0xFF XOR scramble_key = ERASED_PATTERN
+```
+
+The ERASED_PATTERN (`2636ea30350b91efeeab499f988a90ee`) is what the programmer
+reads from erased pages. The ANS firmware knows this pattern = erased.
+
+### Why Both Erase and Write-0xFF Should Work
+
+```
+True chip erase:
+  Physical = 0xFF → read → randomizer → ERASED_PATTERN
+  ANS sees: erased → blank → SUCCESS
+
+Write all 0xFF:
+  0xFF → write → randomizer → scrambled → physical cells
+  Read back → randomizer → descrambled → 0xFF
+  ANS sees: 0xFF → blank → SUCCESS
+
+Both produce the same result from the ANS firmware's perspective.
+```
+
+### Why Wiped Chips Might Still Fail
+
+If a properly erased chip still fails DFU, possible causes:
+
+1. **Incomplete erase**: The programmer didn't erase ALL blocks, particularly:
+   - Reserved/system blocks that the NAND controller protects
+   - Spare/OOB areas that contain metadata
+   - Bad block markers that survived the erase
+
+2. **ECC metadata**: Modern NAND stores ECC parity data in spare areas.
+   A chip erase clears data pages but may leave ECC structures that
+   the ANS firmware interprets as valid metadata.
+
+3. **NAND controller internal state**: Some NAND packages have an
+   internal controller that maintains its own state independently
+   of the raw flash cells. This state may survive a chip erase.
+
+4. **The chips are NOT truly blank-compatible**: The "blank NAND"
+   path in the ANS firmware may require specific NAND ID responses
+   that only come from never-written chips. Once a chip has been
+   initialized by the ANS firmware, some internal state may be
+   permanently written that cannot be erased.
+
+### The Practical Solution
+
+Since we can't modify the ANS firmware, we have two reliable paths:
+
+1. **Use factory-blank chips** (never initialized by any SoC)
+2. **Flash valid FTL metadata** using NandX with correct dump files
+   for the chip type (takes the "Non-Blank" path with valid data)
+
+For chips that have been previously used, option 2 is the only reliable
+approach. This requires dump files for the specific NAND type (Kioxia
+dumps for Kioxia chips, Hynix dumps for Hynix chips).
