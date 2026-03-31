@@ -23,8 +23,10 @@ from nand_tool import (
 # ── Device / board definitions ────────────────────────────────────────────────
 
 # Source: https://logi.wiki/index.php/MacBook_NAND_List
-# Note: "capacity" = TOTAL system capacity. Each chip is typically half (2 chips)
-#       or quarter (4 chips) of total.
+# Architecture: NAND0 (UN000) is always the over-provisioned master chip.
+#   KICM232 = 160GB raw (master for 256GB / 4-NAND 512GB configs)
+#   KICM233 = 320GB raw (master for 512GB / 4-NAND 1TB configs)
+#   Remaining positions use standard-capacity slave chips.
 # F2 values with '?' are unknown — need a dump to identify.
 
 DEVICES = {
@@ -35,26 +37,26 @@ DEVICES = {
         'capacities': {
             '256GB (Kioxia)': {
                 'positions': [
-                    {'tag': 'UN000', 'label': 'NAND0 (128GB)', 'chip': 'KICM232', 'f2': '?'},
-                    {'tag': 'UN100', 'label': 'NAND1 (128GB)', 'chip': 'KICM225', 'f2': '?'},
+                    {'tag': 'UN000', 'label': 'NAND0 master (160GB raw)', 'chip': 'KICM232', 'f2': '?'},
+                    {'tag': 'UN100', 'label': 'NAND1 slave (128GB)', 'chip': 'KICM225', 'f2': '?'},
                 ],
             },
             '256GB (Hynix)': {
                 'positions': [
-                    {'tag': 'UN000', 'label': 'NAND0 (128GB)', 'chip': 'H23B1T82D7AEQ', 'f2': '?'},
-                    {'tag': 'UN100', 'label': 'NAND1 (128GB)', 'chip': 'H23B1T82D7AEQ', 'f2': '?'},
+                    {'tag': 'UN000', 'label': 'NAND0 master', 'chip': 'H23B1T82D7AEQ', 'f2': '?'},
+                    {'tag': 'UN100', 'label': 'NAND1 slave', 'chip': 'H23B1T82D7AEQ', 'f2': '?'},
                 ],
             },
             '512GB (Kioxia)': {
                 'positions': [
-                    {'tag': 'UN000', 'label': 'NAND0 (256GB)', 'chip': 'KICM233', 'f2': 'f007cc44bdac94bf15111ec5bc88d006'},
-                    {'tag': 'UN100', 'label': 'NAND1 (256GB)', 'chip': 'KICM227', 'f2': 'd3bc36674d8ec40531c35ffec6f04c91'},
+                    {'tag': 'UN000', 'label': 'NAND0 master (320GB raw)', 'chip': 'KICM233', 'f2': 'f007cc44bdac94bf15111ec5bc88d006'},
+                    {'tag': 'UN100', 'label': 'NAND1 slave (256GB)', 'chip': 'KICM227', 'f2': 'd3bc36674d8ec40531c35ffec6f04c91'},
                 ],
             },
             '512GB (Hynix)': {
                 'positions': [
-                    {'tag': 'UN000', 'label': 'NAND0 (256GB)', 'chip': 'H23B2588H7AEQ-BC', 'f2': '?'},
-                    {'tag': 'UN100', 'label': 'NAND1 (256GB)', 'chip': 'H23B2T83G7AEQ-BC', 'f2': '?'},
+                    {'tag': 'UN000', 'label': 'NAND0 master', 'chip': 'H23B2588H7AEQ-BC', 'f2': '?'},
+                    {'tag': 'UN100', 'label': 'NAND1 slave', 'chip': 'H23B2T83G7AEQ-BC', 'f2': '?'},
                 ],
             },
             '1TB (Kioxia)': {
@@ -90,16 +92,18 @@ DEVICES = {
         'capacities': {
             '512GB (Kioxia)': {
                 'positions': [
-                    {'tag': 'UN000', 'label': 'NAND0', 'chip': 'KICM229', 'f2': '098816c0854210564584afd0f5c1e6c1'},
-                    {'tag': 'UN100', 'label': 'NAND1', 'chip': 'KICM229', 'f2': '098816c0854210564584afd0f5c1e6c1'},
-                    {'tag': 'UN200', 'label': 'NAND2', 'chip': 'KICM229', 'f2': '098816c0854210564584afd0f5c1e6c1'},
-                    {'tag': 'UN300', 'label': 'NAND3', 'chip': 'KICM229', 'f2': '098816c0854210564584afd0f5c1e6c1'},
+                    {'tag': 'UN000', 'label': 'NAND0 master (160GB raw)', 'chip': 'KICM232', 'f2': '?'},
+                    {'tag': 'UN100', 'label': 'NAND1 slave (128GB)', 'chip': 'KICM225', 'f2': '?'},
+                    {'tag': 'UN200', 'label': 'NAND2 slave (128GB)', 'chip': 'KICM225', 'f2': '?'},
+                    {'tag': 'UN300', 'label': 'NAND3 slave (128GB)', 'chip': 'KICM225', 'f2': '?'},
                 ],
             },
             '1TB (Kioxia)': {
                 'positions': [
-                    {'tag': 'UN000', 'label': 'NAND0', 'chip': 'KICM223', 'f2': 'e4569cdf058135a8a80096adba963bf1'},
-                    {'tag': 'UN100', 'label': 'NAND1', 'chip': 'KICM223', 'f2': 'e4569cdf058135a8a80096adba963bf1'},
+                    {'tag': 'UN000', 'label': 'NAND0 master (320GB raw)', 'chip': 'KICM233', 'f2': 'f007cc44bdac94bf15111ec5bc88d006'},
+                    {'tag': 'UN100', 'label': 'NAND1 slave (256GB)', 'chip': 'KICM227', 'f2': 'd3bc36674d8ec40531c35ffec6f04c91'},
+                    {'tag': 'UN200', 'label': 'NAND2 slave (256GB)', 'chip': 'KICM227', 'f2': 'd3bc36674d8ec40531c35ffec6f04c91'},
+                    {'tag': 'UN300', 'label': 'NAND3 slave (256GB)', 'chip': 'KICM227', 'f2': 'd3bc36674d8ec40531c35ffec6f04c91'},
                 ],
             },
         },
