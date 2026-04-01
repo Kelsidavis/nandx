@@ -836,6 +836,121 @@ def generate_minimal_ftl(f2_hex: str, size_mb: int, output_path: str):
     print(f"  Dense data: all erased")
     print(f"  ANS firmware should see: namespace_count > 0 → non-blank → load FTL")
 
+
+# ── H7 Format Conversion ─────────────────────────────────────────────────────
+
+H7_PAGE_SIZE = 18336       # 16384 data + 1952 spare
+H7_DATA_PER_PAGE = 16384
+H7_SPARE_PER_PAGE = 1952
+H7_PAGES_PER_BLOCK = 384
+
+
+def convert_std_to_h7(std_path: str, blank_h7_path: str, output_path: str):
+    """
+    Convert a standard programmer dump to H7 format using a blank H7 dump
+    as the NAND randomizer source.
+
+    The blank H7 dump of the TARGET chip type provides the per-page
+    randomizer sequences needed for the conversion.
+
+    Args:
+        std_path: Standard format dump file (.bin with 16-byte header + XOR scrambled data)
+        blank_h7_path: H7 format blank dump of the TARGET chip type (provides randomizer)
+        output_path: Output H7 format file
+    """
+    with open(std_path, 'rb') as f:
+        std_raw = f.read()
+    with open(blank_h7_path, 'rb') as f:
+        blank_h7 = f.read()
+
+    if std_raw[:16] != FILE_HEADER:
+        print(f"ERROR: {std_path} is not a standard format dump (wrong header)")
+        return
+
+    # Descramble standard data to get logical data
+    std_data = std_raw[16:]
+    logical = descramble(std_data)
+
+    # Build H7 pages using blank dump as randomizer
+    h7_pages = bytearray()
+    for page_idx in range(H7_PAGES_PER_BLOCK):
+        # Randomizer = blank_page XOR 0xFF
+        rand_start = 16 + page_idx * H7_PAGE_SIZE
+        rand_page = blank_h7[rand_start:rand_start + H7_PAGE_SIZE]
+        randomizer_data = bytes(b ^ 0xFF for b in rand_page[:H7_DATA_PER_PAGE])
+
+        # Logical data for this page
+        data_start = page_idx * H7_DATA_PER_PAGE
+        if data_start + H7_DATA_PER_PAGE <= len(logical):
+            page_logical = logical[data_start:data_start + H7_DATA_PER_PAGE]
+        else:
+            page_logical = b'\xFF' * H7_DATA_PER_PAGE
+
+        # XOR logical data with randomizer
+        h7_data = bytes(a ^ b for a, b in zip(page_logical, randomizer_data))
+        # Spare area from blank (keeps erased spare)
+        h7_spare = rand_page[H7_DATA_PER_PAGE:H7_PAGE_SIZE]
+
+        h7_pages.extend(h7_data)
+        h7_pages.extend(h7_spare)
+
+    # Header (zeros — the H7 will regenerate this)
+    h7_header = b'\x00' * 16
+
+    # Block address table from blank dump
+    trailer_start = 16 + H7_PAGES_PER_BLOCK * H7_PAGE_SIZE
+    h7_trailer = blank_h7[trailer_start:trailer_start + 512]
+    if len(h7_trailer) < 512:
+        h7_trailer += b'\x00' * (512 - len(h7_trailer))
+
+    output = h7_header + bytes(h7_pages) + h7_trailer
+    with open(output_path, 'wb') as f:
+        f.write(output)
+
+    print(f"Converted: {os.path.basename(std_path)} → {output_path}")
+    print(f"  Standard format: {len(std_raw)} bytes")
+    print(f"  H7 format: {len(output)} bytes")
+    print(f"  Randomizer source: {os.path.basename(blank_h7_path)}")
+
+
+def convert_h7_to_std(h7_path: str, blank_h7_path: str, output_path: str):
+    """
+    Convert an H7 format dump to standard programmer format.
+
+    Args:
+        h7_path: H7 format dump file
+        blank_h7_path: H7 format blank dump of the SAME chip type (provides randomizer)
+        output_path: Output standard format file
+    """
+    with open(h7_path, 'rb') as f:
+        h7_data = f.read()
+    with open(blank_h7_path, 'rb') as f:
+        blank_h7 = f.read()
+
+    # Extract logical data by removing randomizer
+    logical = bytearray()
+    for page_idx in range(H7_PAGES_PER_BLOCK):
+        h7_start = 16 + page_idx * H7_PAGE_SIZE
+        h7_page = h7_data[h7_start:h7_start + H7_DATA_PER_PAGE]
+
+        rand_start = 16 + page_idx * H7_PAGE_SIZE
+        rand_page = blank_h7[rand_start:rand_start + H7_DATA_PER_PAGE]
+        randomizer = bytes(b ^ 0xFF for b in rand_page)
+
+        page_logical = bytes(a ^ b for a, b in zip(h7_page, randomizer))
+        logical.extend(page_logical)
+
+    # Apply standard scramble
+    std_data = scramble(bytes(logical))
+    output = FILE_HEADER + std_data
+
+    with open(output_path, 'wb') as f:
+        f.write(output)
+
+    print(f"Converted: {os.path.basename(h7_path)} → {output_path}")
+    print(f"  H7 format: {len(h7_data)} bytes")
+    print(f"  Standard format: {len(output)} bytes")
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 USAGE = """
@@ -855,6 +970,10 @@ Usage:
   nand_tool.py min-ftl <f2> <size_mb> <out> Generate minimal FTL header + erased data
   nand_tool.py list-chips                   Show known chip types and generations
   nand_tool.py register-chip <f.bin> <name> Register new chip type from a dump
+  nand_tool.py to-h7 <std.bin> <blank_h7.bin> <out.bin>
+                                            Convert standard → H7 format (for LB H7 programmer)
+  nand_tool.py from-h7 <h7.bin> <blank_h7.bin> <out.bin>
+                                            Convert H7 → standard format (for analysis)
   nand_tool.py descramble <in> <out>        Remove XOR scrambling for analysis
   nand_tool.py scramble <in> <out>          Re-apply XOR scrambling
 
@@ -999,6 +1118,22 @@ def main():
             return
         generate_minimal_ftl(sys.argv[2], int(sys.argv[3]), sys.argv[4])
 
+    elif cmd == 'to-h7':
+        if len(sys.argv) < 5:
+            print("Usage: nand_tool.py to-h7 <standard.bin> <blank_h7.bin> <output.bin>")
+            print("  Convert standard format dump to H7 format for LB H7 programmer.")
+            print("  blank_h7.bin = H7 blank dump of the TARGET chip (provides randomizer).")
+            return
+        convert_std_to_h7(sys.argv[2], sys.argv[3], sys.argv[4])
+
+    elif cmd == 'from-h7':
+        if len(sys.argv) < 5:
+            print("Usage: nand_tool.py from-h7 <h7.bin> <blank_h7.bin> <output.bin>")
+            print("  Convert H7 format dump to standard format for analysis.")
+            print("  blank_h7.bin = H7 blank dump of the SAME chip (provides randomizer).")
+            return
+        convert_h7_to_std(sys.argv[2], sys.argv[3], sys.argv[4])
+
     elif cmd == 'descramble':
         if len(sys.argv) < 4:
             print("Usage: nand_tool.py descramble <in.bin> <out.bin>")
@@ -1028,5 +1163,6 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 
